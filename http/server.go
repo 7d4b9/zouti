@@ -73,7 +73,21 @@ func (s *Server) run(ctx context.Context) {
 	case <-ctx.Done():
 		zap.L().Info("closing http server",
 			zap.String("server_addr", s.Addr))
-		s.Close()
+		timeout := config.GetDuration(serverShutdownTimeoutConfig)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		switch err := s.Shutdown(shutdownCtx); err {
+		case nil:
+		case context.Canceled:
+			zap.L().Info("http server shutdown timeouted",
+				zap.Error(err),
+				zap.String("server_addr", s.Addr),
+				zap.Duration("exit_timeout", timeout))
+		default:
+			zap.L().Error("http server shutdown unexpected",
+				zap.Error(err),
+				zap.String("server_addr", s.Addr))
+		}
 		<-serverExited
 	case <-serverExited:
 	}

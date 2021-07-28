@@ -10,87 +10,76 @@ import (
 
 type Server struct {
 	*http.Server
-	stop func()
+	stopped chan struct{}
 }
 
-func New(addr string, handler http.Handler) *Server {
-	return &Server{
+func New(ctx context.Context, addr string, handler http.Handler) *Server {
+	s := &Server{
 		Server: &http.Server{
 			Addr:    addr,
 			Handler: handler,
 		},
 	}
+	return s
 }
 
-func (s *Server) Start(ctx context.Context) error {
-	if s.stop != nil {
-		return errors.New("server already started")
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.run(ctx)
-	}()
-	s.stop = func() { cancel(); <-done }
-	return nil
+// Wait must be called if Run have been called to re-sync.
+func (s *Server) Wait() {
+	<-s.stopped
+	s.stopped = nil
 }
 
-func (s *Server) Stop(ctx context.Context) error {
-	if s.stop == nil {
-		return errors.New("server not started")
-	}
-	defer func() { s.stop = nil }()
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		s.stop()
-	}()
-	select {
-	case <-stopped: // graceful shutdown
-		return nil
-	case <-ctx.Done(): // force shutdown
-		return s.Server.Close()
-	}
-}
+var ErrServerRunAlreadyRunning = errors.New("HTTP server already launched")
 
-func (s *Server) run(ctx context.Context) {
+// Run require calling Wait to ensure asynchronous internal processing finishes.
+// It is mandatory to call Wait between each call to Run to restart.
+func (s *Server) Run(ctx context.Context) error {
+	if s.stopped != nil {
+		return ErrServerRunAlreadyRunning
+	}
 	serverExited := make(chan struct{})
 	go func() {
 		defer close(serverExited)
 		switch err := s.ListenAndServe(); err {
 		case http.ErrServerClosed:
-			zap.L().Info("http server closed",
+			zap.L().Info("HTTP server closed",
 				zap.String("server_addr", s.Addr))
 		case nil:
 		default:
-			zap.L().Error("http server exit unexpected",
+			zap.L().Error("HTTP server exit unexpected",
 				zap.Error(err),
 				zap.String("server_addr", s.Addr))
 		}
 	}()
-	select {
-	case <-ctx.Done():
-		zap.L().Info("closing http server",
-			zap.String("server_addr", s.Addr))
-		timeout := config.GetDuration(serverShutdownTimeoutConfig)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		switch err := s.Shutdown(shutdownCtx); err {
-		case nil:
-		case context.Canceled:
-			zap.L().Info("http server shutdown timeouted",
-				zap.Error(err),
-				zap.String("server_addr", s.Addr),
-				zap.Duration("exit_timeout", timeout))
-		default:
-			zap.L().Error("http server shutdown unexpected",
-				zap.Error(err),
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			zap.L().Info("closing http server",
 				zap.String("server_addr", s.Addr))
+			timeout := config.GetDuration(serverShutdownTimeoutConfig)
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			switch err := s.Shutdown(ctx); err {
+			case nil:
+			default:
+				zap.L().Info("HTTP server graceful shutdown",
+					zap.Error(err),
+					zap.String("server_addr", s.Addr),
+					zap.Duration("exit_timeout", timeout))
+				if err := s.Server.Close(); err != nil {
+					zap.L().Info("HTTP server force exit",
+						zap.Error(err),
+						zap.String("server_addr", s.Addr))
+				}
+			}
+			<-serverExited
+		case <-serverExited:
 		}
-		<-serverExited
-	case <-serverExited:
-	}
-	zap.L().Info("http server exited",
+	}()
+	zap.L().Info("HTTP server exited",
 		zap.String("server_addr", s.Addr))
+	s.stopped = done
+	return nil
 }

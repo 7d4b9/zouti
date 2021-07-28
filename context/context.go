@@ -6,7 +6,8 @@ import (
 	"os/signal"
 )
 
-var Root context.Context
+// CancelOnSigInterrupt is a context that will expire after receiving signal SIGINT.
+var CancelOnSigInterrupt context.Context
 
 func init() {
 	s := make(chan os.Signal)
@@ -14,7 +15,7 @@ func init() {
 	go func() {
 		defer close(s)
 		var cancel func()
-		Root, cancel = context.WithCancel(context.Background())
+		CancelOnSigInterrupt, cancel = context.WithCancel(context.Background())
 		<-s
 		cancel()
 	}()

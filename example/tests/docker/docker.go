@@ -1,15 +1,17 @@
 package docker
 
 import (
+	"dynamo/context"
+	"dynamo/rand"
 	"fmt"
-	"lever/context"
-	"lever/rand"
 	"os"
 	"sync"
 
+	"github.com/docker/cli/cli/streams"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
@@ -35,8 +37,10 @@ type Client struct {
 }
 
 func NewClient(client *client.Client, image string) (*Client, error) {
-	if _, err := client.ImagePull(context.CancelOnSigInterrupt, image, types.ImagePullOptions{}); err != nil {
-		return nil, fmt.Errorf("pull docker image=%s, error=%w", image, err)
+	if responseBody, err := client.ImagePull(context.CancelOnSigInterrupt, image, types.ImagePullOptions{}); err != nil {
+		return nil, fmt.Errorf("pull docker image=%s: %w", image, err)
+	} else if err := jsonmessage.DisplayJSONMessagesToStream(responseBody, streams.NewOut(os.Stdout), nil); err != nil {
+		return nil, fmt.Errorf("docker pull logs, image=%s: %w", image, err)
 	}
 	return &Client{
 		Client: client,
@@ -54,11 +58,12 @@ func (c *Client) RunContainer(containerConfig *container.Config, containerNameBa
 	containerName := containerNameBase + "-" + runID
 	createdContainer, err := c.Client.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
 	if err != nil {
-		return fmt.Errorf("cannot create container, error=%w", err)
+		return fmt.Errorf("cannot create container: %w", err)
 	}
+	c.containerID = createdContainer.ID
 	err = c.Client.ContainerStart(ctx, createdContainer.ID, types.ContainerStartOptions{})
 	if err != nil {
-		return fmt.Errorf("cannot start container, error=%w", err)
+		return fmt.Errorf("cannot start container: %w", err)
 	}
 	logs, err := c.Client.ContainerLogs(ctx, createdContainer.ID, types.ContainerLogsOptions{
 		ShowStdout: true,
@@ -66,7 +71,7 @@ func (c *Client) RunContainer(containerConfig *container.Config, containerNameBa
 		Follow:     true,
 	})
 	if err != nil {
-		return fmt.Errorf("cannot configure container logs, error=%w", err)
+		return fmt.Errorf("cannot configure container logs: %w", err)
 	}
 	c.runWaitGroup.Add(1)
 	go func() {
@@ -77,7 +82,6 @@ func (c *Client) RunContainer(containerConfig *container.Config, containerNameBa
 				zap.String("container", containerName))
 		}
 	}()
-	c.containerID = createdContainer.ID
 	return nil
 }
 

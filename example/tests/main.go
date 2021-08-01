@@ -4,42 +4,59 @@ import (
 	"os"
 	"time"
 
-	"github.com/7d4b9/lever/example/tests/docker"
-	"github.com/7d4b9/lever/example/tests/internal/app"
+	"ricklepickle/docker/postgres"
+	"ricklepickle/internal/app"
+
 	"github.com/cucumber/godog"
 	"github.com/cucumber/messages-go/v10"
 	"github.com/docker/docker/client"
+	"go.uber.org/zap"
 )
 
 func main() {
+	var status int = 0
+	defer func() {
+		os.Exit(status)
+	}()
 	opts := godog.Options{
 		Format:    "progress",
 		Paths:     []string{"features"},
 		Randomize: time.Now().UTC().UnixNano(), // randomize scenario execution order
 	}
-
-	c, _ := client.NewClientWithOpts(client.FromEnv)
-	dockerClient, _ := docker.NewClient(c, "")
-
-	app := &App{
-		app.NewClient(dockerClient),
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		zap.L().Error("create docker client: %w")
+		return
 	}
-
-	status := godog.TestSuite{
+	postgresClient, err := postgres.NewClient(dockerClient)
+	if err != nil {
+		zap.L().Error("create docker client: %w")
+		return
+	}
+	appClient, err := app.NewClient(dockerClient)
+	if err != nil {
+		zap.L().Error("create docker client: %w")
+		return
+	}
+	suite := &Suite{
+		App:      appClient,
+		Postgres: postgresClient,
+	}
+	status = godog.TestSuite{
 		Name:                 "example",
-		TestSuiteInitializer: InitializeTestSuite(app),
+		TestSuiteInitializer: InitializeTestSuite(suite),
 		ScenarioInitializer:  InitializeScenario,
 		Options:              &opts,
 	}.Run()
 
-	os.Exit(status)
 }
 
-type App struct {
-	App *app.Client
+type Suite struct {
+	App      *app.Client
+	Postgres *postgres.Client
 }
 
-func InitializeTestSuite(app *App) func(testSuiteContext *godog.TestSuiteContext) {
+func InitializeTestSuite(app *Suite) func(testSuiteContext *godog.TestSuiteContext) {
 	return func(testSuiteContext *godog.TestSuiteContext) {
 
 		testSuiteContext.BeforeSuite(func() {

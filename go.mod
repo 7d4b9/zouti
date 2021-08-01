@@ -1,4 +1,4 @@
-module github.com/7d4b9/lever
+module github.com/7d4b9/zouti
 
 go 1.16
 
